@@ -210,6 +210,9 @@ public class BrowserProfile: Profile {
 
     weak private var app: UIApplication?
 
+    let db: BrowserDB
+    let loginsDB: BrowserDB
+
     /**
      * N.B., BrowserProfile is used from our extensions, often via a pattern like
      *
@@ -226,6 +229,10 @@ public class BrowserProfile: Profile {
         self.app = app
 
         self.keychain = KeychainWrapper.sharedAppContainerKeychain
+
+        // Setup our database handles
+        self.loginsDB = BrowserDB(filename: "logins.db", secretKey: "sqlcipher.key.logins.db", files: files)
+        self.db = BrowserDB(filename: "browser.db", files: files)
 
         if clear {
             do {
@@ -285,26 +292,16 @@ public class BrowserProfile: Profile {
         log.debug("Reopening profile.")
         isShutdown = false
         
-        if BrowserProfile.dbCreated {
-            db.reopenIfClosed()
-        }
-
-        if BrowserProfile.loginsDBCreated {
-            loginsDB.reopenIfClosed()
-        }
+        db.reopenIfClosed()
+        loginsDB.reopenIfClosed()
     }
 
     func shutdown() {
         log.debug("Shutting down profile.")
         isShutdown = true
 
-        if BrowserProfile.dbCreated {
-            db.forceClose()
-        }
-
-        if BrowserProfile.loginsDBCreated {
-            loginsDB.forceClose()
-        }
+        db.forceClose()
+        loginsDB.forceClose()
     }
 
     @objc
@@ -365,6 +362,9 @@ public class BrowserProfile: Profile {
         NotificationCenter.default.removeObserver(self, name: NotificationOnPageMetadataFetched, object: nil)
         NotificationCenter.default.removeObserver(self, name: NotificationProfileDidFinishSyncing, object: nil)
         NotificationCenter.default.removeObserver(self, name: NotificationPrivateDataClearedHistory, object: nil)
+
+        // Shutdown any handles we have open to our databases
+        shutdown()
     }
 
     func localName() -> String {
@@ -375,22 +375,6 @@ public class BrowserProfile: Profile {
         withExtendedLifetime(self.history) {
             return SQLiteQueue(db: self.db)
         }
-    }()
-
-    /**
-     * For safety and efficiency, we only allow each database to be opened once. It
-     * looks like you can create multiple Profile instances, each pointing to a
-     * different database, but that's not currently the case.
-     *
-     * These `dbCreated` flags are an implementation detail to avoid opening a DB
-     * only to immediately close it -- they reflect whether the singleton DB instances
-     * have been assigned.
-     */
-    private static var dbCreated = false
-    lazy var db: BrowserDB = {
-        let db = BrowserDB(filename: "browser.db", files: self.files)
-        BrowserProfile.dbCreated = true
-        return db
     }()
 
     /**
@@ -500,21 +484,6 @@ public class BrowserProfile: Profile {
 
     lazy var logins: BrowserLogins & SyncableLogins & ResettableSyncStorage = {
         return SQLiteLogins(db: self.loginsDB)
-    }()
-
-    // This is currently only used within the dispatch_once block in loginsDB, so we don't
-    // have to worry about races giving us two keys. But if this were ever to be used
-    // elsewhere, it'd be unsafe, so we wrap this in a dispatch_once, too.
-    lazy private var loginsKey: String? = {
-        let key = "sqlcipher.key.logins.db"
-        return key
-    }()
-
-    private static var loginsDBCreated = false
-    private lazy var loginsDB: BrowserDB = {
-        let db = BrowserDB(filename: "logins.db", secretKey: self.loginsKey, files: self.files)
-        BrowserProfile.loginsDBCreated = true
-        return db
     }()
 
     lazy var isChinaEdition: Bool = {
